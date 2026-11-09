@@ -15,7 +15,9 @@
  * server (local bare origin) and the LLM provider.
  */
 
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 
 import { expect, test } from '@playwright/test'
 
@@ -114,13 +116,47 @@ test('clicking Update now moves the backend to the new commit, relaunches the ap
       ).toBe('')
 
       // Hand the machine back to Playwright: quit the relaunched app the way the OS asks it to.
+      const diagDir = path.join(facts.hermesHome, 'logs')
+      const sh = (cmd: string) => {
+        const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 60_000 })
+        return `$ ${cmd}\n${r.stdout ?? ''}${r.stderr ?? ''}\n`
+      }
+      const dump = (tag: string) => {
+        const pid = relaunched.pid
+        fs.writeFileSync(
+          path.join(diagDir, `sigterm-diag-${tag}.txt`),
+          [
+            sh(`date -u +%T.%N; grep -E '^(State|Sig|Shd|Threads)' /proc/${pid}/status`),
+            sh(`for t in /proc/${pid}/task/*; do echo "$(basename $t) $(cat $t/comm) $(awk '{print $3}' $t/stat) $(cat $t/wchan 2>/dev/null)"; done`),
+            sh(`ps -eo pid,ppid,pgid,sid,stat,etimes,args --forest | grep -v grep | grep -E 'Hermes|hermes|posix.sh|chrome' | cut -c1-220`),
+            sh(`sudo cat /proc/${pid}/task/${pid}/stack 2>&1 | head -40`),
+            sh(`sudo gdb -p ${pid} -batch -ex 'info threads' -ex 'thread 1' -ex 'bt 40' 2>&1 | tail -80`),
+            sh(`xwd -root -display "$DISPLAY" -out ${diagDir}/screen-${tag}.xwd 2>&1; ls -la ${diagDir}/screen-${tag}.xwd`)
+          ].join('\n')
+        )
+      }
       process.kill(relaunched.pid, 'SIGTERM')
-      await expect
-        .poll(() => nonGatewayProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
-          timeout: 60_000,
-          message: 'the relaunched app quits cleanly on SIGTERM (its gateway outlives it)'
-        })
-        .toEqual([])
+      try {
+        await expect
+          .poll(() => nonGatewayProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
+            timeout: 20_000,
+            message: 'the relaunched app quits cleanly on SIGTERM (its gateway outlives it)'
+          })
+          .toEqual([])
+      } catch (error) {
+        dump('1')
+        process.kill(relaunched.pid, 'SIGTERM')
+        await new Promise(resolve => setTimeout(resolve, 5_000))
+        dump('2-after-second-term')
+        try {
+          process.kill(relaunched.pid, 'SIGINT')
+        } catch {
+          void 0
+        }
+        await new Promise(resolve => setTimeout(resolve, 5_000))
+        dump('3-after-sigint')
+        throw error
+      }
     })
 
     await test.step('the updated app boots to chat, a turn completes, and it reports itself current', async () => {

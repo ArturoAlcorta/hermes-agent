@@ -11404,7 +11404,10 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
+const quitTeardown = createQuitTeardownCoordinator(() => {
+  quitDiag('teardown finished; app.quit()')
+  app.quit()
+})
 
 const quitFinalization = createQuitFinalization({
   isWindows: IS_WINDOWS,
@@ -16412,6 +16415,38 @@ function scheduleTranslucencyWrite() {
 
 // Flush a pending write before the process can exit, so a quit landing inside
 // the debounce window doesn't lose the setting.
+
+// DEBUG(desktop-app-update-sigterm): synchronous quit-path trace.
+function quitDiag(msg: string) {
+  try {
+    fs.appendFileSync(path.join(HERMES_HOME, 'logs', 'quit-diag.log'), `${new Date().toISOString()} pid=${process.pid} ${msg}\n`)
+  } catch {
+    void 0
+  }
+}
+let quitDiagTimer: NodeJS.Timeout | null = null
+app.on('before-quit', () => {
+  quitDiag(`before-quit(first listener) windows=${BrowserWindow.getAllWindows().length}`)
+  if (!quitDiagTimer) {
+    quitDiagTimer = setInterval(() => {
+      quitDiag(
+        `tick windows=${BrowserWindow.getAllWindows().map(w => `${w.id}:${w.isDestroyed() ? 'D' : w.isVisible() ? 'V' : 'H'}`).join(',')} handles=${(process as any)._getActiveHandles?.().length} reqs=${(process as any)._getActiveRequests?.().length}`
+      )
+    }, 1000)
+    quitDiagTimer.unref()
+  }
+})
+app.on('will-quit', event => quitDiag(`will-quit defaultPrevented=${event.defaultPrevented}`))
+app.on('quit', (_e, code) => quitDiag(`quit code=${code}`))
+app.on('window-all-closed', () => quitDiag('window-all-closed'))
+app.on('browser-window-created', (_e, w) => {
+  quitDiag(`window-created id=${w.id}`)
+  w.on('close', ev => quitDiag(`window close id=${w.id} prevented=${ev.defaultPrevented}`))
+  w.on('closed', () => quitDiag(`window closed id=${w.id}`))
+  w.webContents.on('will-prevent-unload', () => quitDiag(`will-prevent-unload id=${w.id}`))
+})
+quitDiag('main loaded')
+
 app.on('before-quit', () => {
   if (translucencyWriteTimer) {
     clearTimeout(translucencyWriteTimer)
@@ -17888,6 +17923,7 @@ function quitIfNoSurfaceLeft() {
 }
 
 app.on('before-quit', event => {
+  quitDiag(`before-quit(main) held? prompt=${quitPromptOpen} confirmed=${quitConfirmedWithActiveWork} handoff=${isQuittingForHandoff} managedWait=${!!managedUpdateQuitWait} done=${managedUpdateQuitWaitDone} upd=${managedConnectionUpdates.size} rec=${managedConnectionRecoveries.size}`)
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was: a held quit is not a quit in progress, and the
   // overlay-suppression latch must not leak into the next close (#130810).
@@ -17958,7 +17994,9 @@ app.on('before-quit', event => {
     teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
   }
 
-  if (quitTeardown.begin(teardownTasks)) {
+  const teardownWaits = quitTeardown.begin(teardownTasks)
+  quitDiag(`teardown begin waits=${teardownWaits} backendNeedsWait=${backendNeedsWait} sshNeedsWait=${sshNeedsWait}`)
+  if (teardownWaits) {
     event.preventDefault()
   }
 

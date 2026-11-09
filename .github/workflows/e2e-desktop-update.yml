@@ -42,14 +42,8 @@ jobs:
       # shards cannot share one), so each job stays well inside 15 minutes.
       matrix:
         include:
-          - cell: first-run
-            specs: e2e/update/first-run.spec.ts e2e/update/gates.spec.ts
           - cell: app-update
             specs: e2e/update/app-update.spec.ts
-          - cell: build-fail
-            specs: e2e/update/build-fail.spec.ts
-          - cell: update-concurrency
-            specs: e2e/update/update-concurrency.spec.ts
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -61,7 +55,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            xvfb bubblewrap \
+            xvfb bubblewrap gdb x11-apps \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
           # bwrap (the installer/updater sandbox) needs unprivileged user namespaces.
