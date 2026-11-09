@@ -276,9 +276,31 @@ class PtyHermes:
                     "VIRTUAL_ENV", "HERMES_RUNTIME_DIR", "HERMES_TUI_DIR", "HERMES_CWD")))
             except OSError as e:
                 out.append(f"proc read failed {e}")
-        for f in sorted(self.root.rglob("*")):
-            if f.is_file() and (f.suffix in (".log", ".txt", ".jsonl") or "log" in f.name) and f.stat().st_size < 2_000_000:
-                out += [f"=== DIAG file {f} ===", f.read_text(errors="replace")[-6000:]]
+        for pid in session_members(self.sid):
+            if "pm/worker.py" in cmdline(pid) or "hermes_cli.main" in cmdline(pid):
+                for cmd in (["sudo", "-n", "env", f"PATH={os.environ['PATH']}", "uvx", "py-spy", "dump", "--pid", str(pid)],
+                            ["sudo", "-n", "cat", f"/proc/{pid}/net/tcp", f"/proc/{pid}/net/tcp6"]):
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                        out += [f"=== DIAG {cmd[-3:]} rc={r.returncode} ===", r.stdout[-12000:], r.stderr[-3000:]]
+                    except Exception as e:
+                        out.append(f"{cmd} failed {e}")
+                try:
+                    out.append("fds: " + " ".join(os.readlink(f"/proc/{pid}/fd/{fd}") for fd in os.listdir(f"/proc/{pid}/fd")))
+                except OSError as e:
+                    out.append(f"fd read failed {e}")
+        hh = self.hermes_home
+        for f in sorted(hh.rglob("*")):
+            rel = f.relative_to(hh)
+            if len(rel.parts) <= 3 or (f.is_file() and ("part" in f.name or "lock" in f.name or f.suffix == ".json")):
+                try:
+                    out.append(f"ls {rel} {f.stat().st_size if f.is_file() else 'dir'}")
+                except OSError:
+                    pass
+        for f in sorted(hh.rglob("*")):
+            if f.is_file() and f.suffix in (".log", ".jsonl", ".json") and "node_modules" not in f.parts \
+                    and "lib" not in f.parts and f.stat().st_size < 2_000_000:
+                out += [f"=== DIAG file {f.relative_to(hh)} ===", f.read_text(errors="replace")[-5000:]]
         return "\n".join(out)
 
     def _dead(self) -> bool:
